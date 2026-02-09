@@ -44,3 +44,35 @@ function scrollUp() {
   else scrollUp.classList.remove("show-scroll");
 }
 window.addEventListener("scroll", scrollUp);
+
+// Cookie Consent
+const cookiePopup = document.getElementById('cookie-popup');
+const acceptBtn = document.getElementById('cookie-accept');
+const rejectBtn = document.getElementById('cookie-reject');
+const manageBtn = document.getElementById('cookie-manage');
+
+if (cookiePopup && !localStorage.getItem('cookieConsent')) {
+  setTimeout(() => {
+    cookiePopup.classList.add('show');
+  }, 1000);
+}
+
+if (acceptBtn) {
+  acceptBtn.addEventListener('click', () => {
+    localStorage.setItem('cookieConsent', 'accepted');
+    cookiePopup.classList.remove('show');
+  });
+}
+
+if (rejectBtn) {
+  rejectBtn.addEventListener('click', () => {
+    localStorage.setItem('cookieConsent', 'rejected');
+    cookiePopup.classList.remove('show');
+  });
+}
+
+if (manageBtn) {
+  manageBtn.addEventListener('click', () => {
+    alert("Funzionalità 'Gestisci preferenze' in arrivo.");
+  });
+}
