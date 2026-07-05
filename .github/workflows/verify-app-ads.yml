@@ -1,0 +1,156 @@
+name: Verify app-ads.txt
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: read
+
+env:
+  EXPECTED_APP_ADS_LINE: google.com, pub-8928964610230447, DIRECT, f08c47fec0942fa0
+  PAGES_DOMAIN: ciaoromavip.com
+  PAGES_BRANCH: main
+  PAGES_LIVE_URLS: |
+    https://ciaoromavip.com/app-ads.txt
+    https://www.ciaoromavip.com/app-ads.txt
+
+jobs:
+  local-file:
+    name: Validate repository app-ads.txt
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate app-ads.txt format and publisher entry
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+
+          expected = os.environ["EXPECTED_APP_ADS_LINE"]
+          path = Path("app-ads.txt")
+
+          if not path.is_file():
+              raise SystemExit("app-ads.txt must exist at the repository root.")
+
+          records = []
+          for line_number, raw_line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), start=1):
+              line = raw_line.strip()
+              if not line or line.startswith("#"):
+                  continue
+
+              parts = [part.strip() for part in line.split(",")]
+              if len(parts) not in (3, 4):
+                  raise SystemExit(f"Line {line_number} must have 3 or 4 comma-separated fields: {raw_line}")
+
+              domain, publisher_id, relationship = parts[:3]
+              if not domain or not publisher_id:
+                  raise SystemExit(f"Line {line_number} has an empty domain or publisher ID: {raw_line}")
+
+              if relationship not in {"DIRECT", "RESELLER"}:
+                  raise SystemExit(f"Line {line_number} relationship must be DIRECT or RESELLER: {raw_line}")
+
+              if len(parts) == 4 and not parts[3]:
+                  raise SystemExit(f"Line {line_number} has an empty certification authority ID: {raw_line}")
+
+              records.append(", ".join(parts))
+
+          if expected not in records:
+              raise SystemExit(f"Missing required AdMob publisher entry: {expected}")
+
+          print(f"Validated {path} and found the required AdMob publisher entry.")
+          PY
+
+      - name: Validate GitHub Pages CNAME
+        shell: bash
+        run: |
+          test -f CNAME
+          test "$(tr -d '\r\n' < CNAME)" = "$PAGES_DOMAIN"
+
+  github-pages:
+    name: Validate GitHub Pages configuration
+    runs-on: ubuntu-latest
+    needs: local-file
+
+    steps:
+      - name: Check GitHub Pages settings
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GITHUB_TOKEN"]
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/pages",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {token}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+
+          with urllib.request.urlopen(request, timeout=30) as response:
+              data = json.load(response)
+
+          source = data.get("source") or {}
+          checks = {
+              "status": data.get("status") == "built",
+              "cname": data.get("cname") == os.environ["PAGES_DOMAIN"],
+              "https_enforced": data.get("https_enforced") is True,
+              "source_branch": source.get("branch") == os.environ["PAGES_BRANCH"],
+              "source_path": source.get("path") == "/",
+          }
+
+          failed = [name for name, ok in checks.items() if not ok]
+          if failed:
+              raise SystemExit(f"GitHub Pages configuration check failed: {', '.join(failed)}")
+
+          print(f"GitHub Pages is built from {source['branch']}:{source['path']} at {data['html_url']}.")
+          PY
+
+  live-file:
+    name: Validate live app-ads.txt
+    runs-on: ubuntu-latest
+    needs: github-pages
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - name: Check published app-ads.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r url; do
+            [ -n "$url" ] || continue
+
+            for attempt in {1..20}; do
+              if body="$(curl --fail --silent --show-error --location "$url")"; then
+                normalized="$(printf '%s\n' "$body" | tr -d '\r')"
+                if printf '%s\n' "$normalized" | grep -Fxq "$EXPECTED_APP_ADS_LINE"; then
+                  echo "Found required AdMob publisher entry at $url"
+                  continue 2
+                fi
+              fi
+
+              echo "app-ads.txt is not ready yet at $url; retrying ($attempt/20)."
+              sleep 15
+            done
+
+            echo "Published app-ads.txt did not contain required entry at $url: $EXPECTED_APP_ADS_LINE"
+            exit 1
+          done <<< "$PAGES_LIVE_URLS"
